@@ -416,18 +416,53 @@ def lawdata_works(journal_no: str, mailto: str | None = None, n_issues: int = 2)
     return out
 
 
+NEWHISTORY = "https://www.newhistory.org.tw"
+
+
+def newhistory_works(_source_id: str = "", mailto: str | None = None) -> list[dict]:
+    """《新史學》官網（newhistory.org.tw）：首頁的「查看當期目錄」→ 當期各篇 → 每篇的摘要頁。只抓當期。"""
+    home = _lawdata_get(f"{NEWHISTORY}/index/TW")
+    m = re.search(r'href="(/contents/serial/TW/\d+)"', home)
+    if not m:
+        return []
+    page = _lawdata_get(NEWHISTORY + m.group(1))
+    head = re.search(r'textPageTitle_26">\s*(\d{4})\s*(\d+)卷(\d+)期', page)
+    if not head:
+        return []
+    year, vol, iss = head.groups()
+    month = min(12, 3 * int(iss))  # 季刊：1–4 期約為 3、6、9、12 月出刊
+    out = []
+    for author, href, title in re.findall(r"<li>\s*([^<：]+)：<a href=\"(/contents/\d+/\d+)\">(.*?)</a>", page, re.S):
+        time.sleep(1)
+        abstract = ""
+        try:
+            d = _lawdata_get(NEWHISTORY + href)
+            a = re.search(r'class="centText">(.*?)</p>', d, re.S)
+            abstract = _strip(a.group(1)) if a else ""
+        except Exception:  # noqa: BLE001
+            pass
+        out.append({
+            "title": [_strip(title)], "volume": vol, "issue": iss, "page": "",
+            "published-print": {"date-parts": [[int(year), month]]},
+            "author": [{"name": n} for n in re.split(r"[、,，]", _strip(author)) if n],
+            "DOI": "", "URL": NEWHISTORY + href, "abstract": abstract, "type": "journal-article",
+        })
+    return out
+
+
 def fetch_journal(cr: Crossref, j: dict) -> dict:
     res = {**j, "status": "ok", "error": "", "latest": None, "online_first": []}
     errors = []
     merged: dict[str, dict] = {}
     # 兩個 ISSN 都查再合併：有些出版社把舊期別登記在印刷版、新期別登記在電子版
     # （例如 Film History、Framework、The Velvet Light Trap）
-    ids = [j["source_id"]] if j.get("source") in ("openalex", "lawdata") else j["issns"]
+    ids = [j["source_id"]] if j.get("source") in ("openalex", "lawdata", "newhistory") else j["issns"]
     for issn in ids:
         try:
             src = j.get("source")
             items = (openalex_works(issn, cr.mailto) if src == "openalex" else cinii_works(issn, cr.mailto) if src == "cinii"
-                     else lawdata_works(issn, cr.mailto) if src == "lawdata" else cr.recent_works(issn))
+                     else lawdata_works(issn, cr.mailto) if src == "lawdata"
+                     else newhistory_works(issn, cr.mailto) if src == "newhistory" else cr.recent_works(issn))
         except LookupError as e:
             errors.append(f"{issn}: {e}"); continue
         except Exception as e:  # noqa: BLE001
