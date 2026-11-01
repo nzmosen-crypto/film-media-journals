@@ -1,0 +1,5 @@
+email_config.json
+__pycache__/
+data/*.json
+!data/state.json
+data/*.html

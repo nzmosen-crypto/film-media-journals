@@ -1,0 +1,49 @@
+name: Update film and media journals
+
+on:
+  schedule:
+    - cron: "0 1 1 * *"        # 每月 1 日 01:00 UTC = 台北時間 09:00（每月執行也讓公開 repo 的排程不會因 60 天無活動被停用）
+  workflow_dispatch:            # Actions 頁面可手動執行
+  push:
+    branches: [main]
+    paths: [journals.csv, fetch_latest_issues.py]   # 改了期刊清單或程式就自動重跑
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Optional email config (only if the GMAIL_* secrets exist)
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+        run: |
+          if [ -n "$GMAIL_USER" ] && [ -n "$GMAIL_APP_PASSWORD" ]; then
+            python3 -c "import json,os;u=os.environ['GMAIL_USER'];json.dump({'smtp_host':'smtp.gmail.com','smtp_port':465,'username':u,'app_password':os.environ['GMAIL_APP_PASSWORD'],'to':os.environ.get('MAIL_TO') or u},open('email_config.json','w'))"
+            echo "EMAIL_FLAG=--email" >> "$GITHUB_ENV"
+          fi
+
+      - name: Fetch latest issues and build the public page + RSS
+        run: |
+          OWNER="${GITHUB_REPOSITORY%%/*}"; REPO="${GITHUB_REPOSITORY##*/}"
+          SITE_URL="https://$(echo "$OWNER" | tr '[:upper:]' '[:lower:]').github.io/${REPO}/"
+          python3 fetch_latest_issues.py --title "電影與媒體研究期刊" --out data --site docs --site-url "$SITE_URL" $EMAIL_FLAG
+
+      - name: Commit results
+        run: |
+          rm -f email_config.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/state.json data/latest_issues_*.csv docs
+          git commit -m "Update $(date +%F)" || echo "Nothing to commit"
+          git pull --rebase -q && git push
