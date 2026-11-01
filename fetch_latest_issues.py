@@ -360,14 +360,15 @@ LAWDATA = "https://lawdata.com.tw/tw/"
 
 def _lawdata_get(url: str) -> str:
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (journal-tracker; academic TOC alerts)"})
-    for attempt in range(3):
+    waits = [5, 20, 60, 120]  # 官網偶爾短暫回 403／5xx，間隔拉長再試
+    for attempt in range(len(waits) + 1):
         try:
             with urllib.request.urlopen(req, timeout=60) as r:
                 return r.read().decode("utf-8", "replace")
         except Exception:  # noqa: BLE001
-            if attempt == 2:
+            if attempt == len(waits):
                 raise
-            time.sleep(3)
+            time.sleep(waits[attempt])
     return ""
 
 
