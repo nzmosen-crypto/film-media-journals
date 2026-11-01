@@ -432,12 +432,16 @@ def article_li(a: dict) -> str:
                if a.get("abstract") else "") + '</li>')
 
 
+def name_key(name: str) -> tuple:
+    """刊名排序：忽略開頭的 The／A，不分大小寫；拉丁字母刊名在前，日、韓文刊名在後。"""
+    n = re.sub(r"^(the|a|an)\s+", "", name.strip(), flags=re.I).casefold()
+    return (not n[:1].isascii(), n)
+
+
 def write_html(results: list[dict], path: Path, generated: str, top_extra: str = "") -> None:
     ok = [r for r in results if r.get("latest")]
     bad = [r for r in results if not r.get("latest")]
-    ok.sort(key=lambda r: (not r.get("is_new"), r["latest"]["date"] == "", ), )
-    ok.sort(key=lambda r: r["latest"]["date"], reverse=True)
-    ok.sort(key=lambda r: not r.get("is_new"))
+    ok.sort(key=lambda r: name_key(r["name"]))  # 刊名 A–Z（日、韓文刊名排在最後）
     n_new = sum(1 for r in ok if r.get("is_new"))
     cards = []
     for r in ok:
@@ -731,8 +735,7 @@ def main(argv=None) -> int:
                 print(f"[{i:>3}/{len(journals)}] {r['name']}: 失敗 — {r['error']}")
             results.append(r)
 
-    order = {j["name"]: n for n, j in enumerate(journals)}
-    results.sort(key=lambda r: order.get(r["name"], 0))
+    results.sort(key=lambda r: name_key(r["name"]))  # 刊名 A–Z
     n_filled = fill_abstracts_openalex(results, a.mailto)
     if n_filled:
         print(f"從 OpenAlex 補上 {n_filled} 篇摘要")
