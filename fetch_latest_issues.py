@@ -355,16 +355,79 @@ def openalex_works(source_id: str, mailto: str | None = None) -> list[dict]:
     return out
 
 
+LAWDATA = "https://lawdata.com.tw/tw/"
+
+
+def _lawdata_get(url: str) -> str:
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (journal-tracker; academic TOC alerts)"})
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                return r.read().decode("utf-8", "replace")
+        except Exception:  # noqa: BLE001
+            if attempt == 2:
+                raise
+            time.sleep(3)
+    return ""
+
+
+def _strip(s: str) -> str:
+    return " ".join(html.unescape(re.sub(r"<[^>]+>", " ", s or "")).replace("\xa0", " ").split()) if s else ""
+
+
+def lawdata_works(journal_no: str, mailto: str | None = None, n_issues: int = 2) -> list[dict]:
+    """臺灣中文期刊：月旦知識庫 lawdata.com.tw 的公開目錄頁（期刊 → 各期 → 每篇的篇名、作者、摘要）。
+    source_id 填該期刊的 journal_list.aspx?no= 編號。只抓最近 n_issues 期，每次請求間隔約 1 秒。"""
+    lst = _lawdata_get(f"{LAWDATA}journal_list.aspx?no={journal_no}")
+    issues = re.findall(r"(\d{6})&nbsp;\(([^)]*?)期\)&nbsp;&nbsp;<a href=\"journal\.aspx\?no=\d+&pno=(\d+)\"", lst)
+    out = []
+    for ym, label, pno in issues[:n_issues]:
+        vol, iss = (label.split(":", 1) + [""])[:2] if ":" in label else ("", label)
+        parts = [int(ym[:4]), int(ym[4:6])]
+        time.sleep(1)
+        page = _lawdata_get(f"{LAWDATA}journal.aspx?no={journal_no}&pno={pno}")
+        for dno in re.findall(r'href="detail\.aspx\?no=(\d+)"', page):
+            time.sleep(1)
+            try:
+                d = _lawdata_get(f"{LAWDATA}detail.aspx?no={dno}")
+            except Exception:  # noqa: BLE001
+                continue
+            rows = {}
+            for th, td in re.findall(r"<th[^>]*>\s*(.*?)\s*</th>\s*<td[^>]*>(.*?)</td>", d, re.S):
+                rows[_strip(th)] = td
+            title = _strip(rows.get("篇名", ""))
+            if not title:
+                continue
+            en = _strip(rows.get("並列篇名", ""))
+            authors = [_strip(a) for a in re.findall(r"<a[^>]*>(.*?)</a>", rows.get("作者", ""))] or \
+                      [a for a in re.split(r"[、,;；]", _strip(rows.get("作者", ""))) if a]
+            doi = re.search(r"10\.\d{4,9}/[^\s<\"]+", rows.get("DOI", "") or "")
+            out.append({
+                "title": [title + (f" / {en}" if en and en != title else "")],
+                "volume": vol.strip() or None, "issue": iss.strip() or None,
+                "page": _strip(rows.get("起訖頁", "")),
+                "published-print": {"date-parts": [parts]},
+                "author": [{"name": a} for a in authors if a],
+                "DOI": doi.group() if doi else "",
+                "URL": f"{LAWDATA}detail.aspx?no={dno}",
+                "abstract": _strip(rows.get("中文摘要", "")) or _strip(rows.get("英文摘要", "")),
+                "type": "journal-article",
+            })
+    return out
+
+
 def fetch_journal(cr: Crossref, j: dict) -> dict:
     res = {**j, "status": "ok", "error": "", "latest": None, "online_first": []}
     errors = []
     merged: dict[str, dict] = {}
     # 兩個 ISSN 都查再合併：有些出版社把舊期別登記在印刷版、新期別登記在電子版
     # （例如 Film History、Framework、The Velvet Light Trap）
-    ids = [j["source_id"]] if j.get("source") == "openalex" else j["issns"]
+    ids = [j["source_id"]] if j.get("source") in ("openalex", "lawdata") else j["issns"]
     for issn in ids:
         try:
-            items = openalex_works(issn, cr.mailto) if j.get("source") == "openalex" else cinii_works(issn, cr.mailto) if j.get("source") == "cinii" else cr.recent_works(issn)
+            src = j.get("source")
+            items = (openalex_works(issn, cr.mailto) if src == "openalex" else cinii_works(issn, cr.mailto) if src == "cinii"
+                     else lawdata_works(issn, cr.mailto) if src == "lawdata" else cr.recent_works(issn))
         except LookupError as e:
             errors.append(f"{issn}: {e}"); continue
         except Exception as e:  # noqa: BLE001
