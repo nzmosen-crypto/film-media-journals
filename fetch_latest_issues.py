@@ -450,19 +450,64 @@ def newhistory_works(_source_id: str = "", mailto: str | None = None) -> list[di
     return out
 
 
+ITH = "https://www.ith.sinica.edu.tw/"
+_ZH_NUM = {c: i for i, c in enumerate("零一二三四五六七八九十", 0)}
+
+
+def _zh_int(t: str) -> int:
+    """『三』→3、『十二』→12；阿拉伯數字直接轉。"""
+    if t.isdigit():
+        return int(t)
+    if "十" in t:
+        a, _, b = t.partition("十")
+        return (_ZH_NUM.get(a, 1) if a else 1) * 10 + (_ZH_NUM.get(b, 0) if b else 0)
+    return _ZH_NUM.get(t, 0)
+
+
+def ith_works(_source_id: str = "", mailto: str | None = None, n_issues: int = 2) -> list[dict]:
+    """《臺灣史研究》官網（中研院臺史所）：歷年期刊列表 → 最近幾期的單期頁（篇名、作者、頁碼、摘要都在同一頁）。"""
+    lst = _lawdata_get(f"{ITH}quarterly_history_list.php?l=c")
+    ids = list(dict.fromkeys(re.findall(r"quarterly_history_look\.php\?l=c&id=(\d+)", lst)))
+    out = []
+    for iid in ids[:n_issues]:
+        time.sleep(1)
+        url = f"{ITH}quarterly_history_look.php?l=c&id={iid}"
+        page = _lawdata_get(url)
+        head = re.search(r"第(\d+)卷\s*第(\S+?)期\s*,\s*(\d{4})年(\d{1,2})月", page)
+        if not head:
+            continue
+        vol, iss, year, month = head.group(1), str(_zh_int(head.group(2))), int(head.group(3)), int(head.group(4))
+        for block in re.split(r'<div class="radio-group-box m-t-20', page)[1:]:
+            t = re.search(r'<div class="h5">(.*?)</div>', block, re.S)
+            if not t:
+                continue
+            author = re.search(r'radio-group-title">.*?</i>\s*(.*?)：', block, re.S)
+            pages = re.search(r"頁\s*([\d\-–]+)", block)
+            abst = re.search(r"摘要：<br>(.*?)</div>", block, re.S)
+            out.append({
+                "title": [_strip(t.group(1))], "volume": vol, "issue": iss,
+                "page": pages.group(1) if pages else "",
+                "published-print": {"date-parts": [[year, month]]},
+                "author": [{"name": n} for n in re.split(r"[、,，]", _strip(author.group(1)) if author else "") if n],
+                "DOI": "", "URL": url, "abstract": _strip(abst.group(1)) if abst else "", "type": "journal-article",
+            })
+    return out
+
+
 def fetch_journal(cr: Crossref, j: dict) -> dict:
     res = {**j, "status": "ok", "error": "", "latest": None, "online_first": []}
     errors = []
     merged: dict[str, dict] = {}
     # 兩個 ISSN 都查再合併：有些出版社把舊期別登記在印刷版、新期別登記在電子版
     # （例如 Film History、Framework、The Velvet Light Trap）
-    ids = [j["source_id"]] if j.get("source") in ("openalex", "lawdata", "newhistory") else j["issns"]
+    ids = [j["source_id"]] if j.get("source") in ("openalex", "lawdata", "newhistory", "ith") else j["issns"]
     for issn in ids:
         try:
             src = j.get("source")
             items = (openalex_works(issn, cr.mailto) if src == "openalex" else cinii_works(issn, cr.mailto) if src == "cinii"
                      else lawdata_works(issn, cr.mailto) if src == "lawdata"
-                     else newhistory_works(issn, cr.mailto) if src == "newhistory" else cr.recent_works(issn))
+                     else newhistory_works(issn, cr.mailto) if src == "newhistory"
+                     else ith_works(issn, cr.mailto) if src == "ith" else cr.recent_works(issn))
         except LookupError as e:
             errors.append(f"{issn}: {e}"); continue
         except Exception as e:  # noqa: BLE001
